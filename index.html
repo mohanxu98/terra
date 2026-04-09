@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Terra</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,200;9..144,300&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --f-disp: 'Fraunces', serif;
+      --f-mono: 'JetBrains Mono', monospace;
+      --hi:  rgba(228, 242, 255, 0.97);
+      --mid: rgba(168, 210, 250, 0.88);
+      --lo:  rgba(130, 175, 228, 0.75);
+      --acc: #6ab8f7;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: var(--f-mono);
+      color: var(--hi);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #canvas { display: block; width: 100%; height: 100%; }
+
+    /* ─── GLASS BASE ───────────────────────────────────────────
+       Shared by all panels. More transparent for true frosted look.
+       ::after = filmy grain overlay.
+    ──────────────────────────────────────────────────────────*/
+    .g {
+      position: relative;
+      backdrop-filter: blur(42px) saturate(1.85) brightness(1.08);
+      -webkit-backdrop-filter: blur(42px) saturate(1.85) brightness(1.08);
+      border-radius: var(--r, 16px);
+      /*
+        Gradient border: bright specular at top-left (where light hits glass),
+        fading to near-invisible, with a faint blue-ambient at bottom-right.
+        Panel fill stays semi-transparent so backdrop-filter shows through.
+      */
+      border: none;
+      background: rgba(14, 26, 64, 0.52);
+      box-shadow:
+        /* soft outer edge glow — no hard line, just light bleeding */
+        0 0 0 0.5px rgba(255, 255, 255, 0.04),
+        0 0 14px 2px rgba(100, 160, 255, 0.07),
+        /* drop shadows */
+        0 2px 6px  rgba(0, 5, 25, 0.50),
+        0 8px 28px rgba(0, 8, 38, 0.36),
+        0 24px 64px rgba(0, 6, 28, 0.20),
+        /* inner glow — diffuse, not a sharp line */
+        inset 0 0 0 0.5px rgba(255, 255, 255, 0.08),
+        inset 0 1px 10px rgba(255, 255, 255, 0.05);
+    }
+
+    /* filmy grain overlay — visible but not harsh */
+    .g::after {
+      content: '';
+      position: absolute; inset: 0;
+      border-radius: inherit;
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+      background-size: 160px 160px;
+      opacity: 0.18;
+      mix-blend-mode: overlay;
+      pointer-events: none;
+    }
+
+    /* ─── LOADING SCREEN ──────────────────────────────────────*/
+    #loading-overlay {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 100;
+      background: #04091c;
+      overflow: hidden;
+      transition: opacity 0.9s ease;
+    }
+    #loading-overlay.fade-out { opacity: 0; pointer-events: none; }
+
+    /* animated gradient drift blobs */
+    #loading-overlay::before {
+      content: '';
+      position: absolute; inset: -20%;
+      background:
+        radial-gradient(ellipse 65% 48% at 38% 42%, rgba(14, 46, 120, 0.65) 0%, transparent 55%),
+        radial-gradient(ellipse 42% 32% at 72% 68%, rgba(8, 22, 70,  0.45) 0%, transparent 50%),
+        radial-gradient(ellipse 30% 25% at 20% 75%, rgba(5, 18,  55,  0.30) 0%, transparent 55%);
+      animation: driftBlobs 22s ease-in-out infinite alternate;
+      pointer-events: none;
+    }
+    @keyframes driftBlobs {
+      0%   { transform: translate(0%,    0%)   scale(1);    }
+      33%  { transform: translate(-1.5%, 2%)   scale(1.04); }
+      66%  { transform: translate(2%,   -1.5%) scale(0.97); }
+      100% { transform: translate(-1%,   1.5%) scale(1.02); }
+    }
+
+    /* animated film-grain canvas */
+    #grain-canvas {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      opacity: 0.46;
+      mix-blend-mode: screen;
+    }
+
+    /* content above grain */
+    .ld-inner {
+      position: relative; z-index: 1;
+      display: flex; flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    .ld-title {
+      font-family: var(--f-disp);
+      font-size: 6rem; font-weight: 300;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      font-optical-sizing: auto;
+      /*
+        letter-spacing adds 0.3em trailing space after the last character.
+        Adding the same amount as padding-left makes both sides equal,
+        so align-items:center in the flex parent lands on the visual midpoint.
+      */
+      padding-left: 0.3em;
+      color: rgba(215, 235, 255, 0.94);
+      text-shadow:
+        0 0 50px rgba(80, 160, 255, 0.38),
+        0 0 100px rgba(50, 120, 240, 0.16),
+        0 2px 6px rgba(0, 0, 0, 0.65);
+      line-height: 1;
+      margin-bottom: 0.45rem;
+    }
+
+    .ld-sub {
+      font-family: var(--f-mono);
+      font-size: 0.58rem; font-weight: 300;
+      letter-spacing: 0.28em; text-transform: uppercase;
+      padding-left: 0.28em; /* same compensation for sub's letter-spacing */
+      color: rgba(100, 155, 220, 0.50);
+      margin-bottom: 3rem;
+    }
+
+    /* ─── MORPHING LIQUID GLASS ORB ─── */
+    .ld-orb-wrap {
+      position: relative;
+      width: 90px; height: 90px;
+      margin: 0 auto 2.8rem;
+    }
+
+    /* faint outer pulse ring */
+    .ld-orb-wrap::before {
+      content: '';
+      position: absolute; inset: -14px;
+      border-radius: 50%;
+      border: 1px solid rgba(90, 170, 255, 0.10);
+      animation: orbRingPulse 4s ease-in-out infinite;
+    }
+    @keyframes orbRingPulse {
+      0%, 100% { opacity: 0.4; transform: scale(1); }
+      50%       { opacity: 0.12; transform: scale(1.09); }
+    }
+
+    .ld-orb {
+      width: 100%; height: 100%;
+      position: relative;
+      border-radius: 58% 42% 68% 32% / 52% 48% 46% 54%;
+      backdrop-filter: blur(22px) saturate(2.0) brightness(1.08);
+      -webkit-backdrop-filter: blur(22px) saturate(2.0) brightness(1.08);
+      background: linear-gradient(148deg,
+        rgba(28, 72, 180, 0.20) 0%,
+        rgba(6,  20, 68,  0.42) 55%,
+        rgba(18, 55, 150, 0.22) 100%);
+      border: 1px solid rgba(140, 200, 255, 0.20);
+      box-shadow:
+        0 0  35px rgba(50, 130, 255, 0.14),
+        0 0  70px rgba(30,  90, 220, 0.07),
+        inset 0 1px 0 rgba(255, 255, 255, 0.20),
+        inset 0 0 22px rgba(60, 130, 240, 0.10);
+      animation: orbMorph 11s ease-in-out infinite;
+      overflow: hidden;
+    }
+    @keyframes orbMorph {
+      0%   { border-radius: 58% 42% 68% 32% / 52% 48% 46% 54%; }
+      14%  { border-radius: 44% 56% 52% 48% / 62% 40% 58% 38%; }
+      28%  { border-radius: 62% 38% 44% 56% / 44% 58% 40% 58%; }
+      42%  { border-radius: 38% 62% 60% 40% / 56% 44% 60% 44%; }
+      56%  { border-radius: 64% 36% 48% 52% / 40% 60% 42% 56%; }
+      70%  { border-radius: 48% 52% 36% 64% / 58% 46% 54% 44%; }
+      84%  { border-radius: 52% 48% 62% 38% / 46% 56% 46% 52%; }
+      100% { border-radius: 58% 42% 68% 32% / 52% 48% 46% 54%; }
+    }
+
+    /* glass highlight crescent */
+    .ld-orb::before {
+      content: '';
+      position: absolute;
+      top: 6%; left: 10%;
+      width: 60%; height: 44%;
+      background: radial-gradient(ellipse at 40% 38%,
+        rgba(255, 255, 255, 0.52) 0%,
+        rgba(200, 228, 255, 0.22) 45%,
+        transparent 70%);
+      border-radius: 50%;
+      transform: rotate(-18deg);
+      filter: blur(4px);
+    }
+
+    /* inner shifting glow */
+    .ld-orb::after {
+      content: '';
+      position: absolute; inset: 12%;
+      background: radial-gradient(circle at 58% 62%,
+        rgba(60, 130, 250, 0.18) 0%, transparent 65%);
+      border-radius: inherit;
+      animation: orbGlow 11s ease-in-out infinite;
+      animation-delay: -3.5s;
+    }
+    @keyframes orbGlow {
+      0%, 100% { opacity: 0.5; transform: scale(0.88) translate(0, 0); }
+      50%       { opacity: 1;   transform: scale(1.08) translate(3px, -3px); }
+    }
+
+    /* ─── PROGRESS ─── */
+    .ld-track {
+      width: 200px; height: 1.5px;
+      background: rgba(255, 255, 255, 0.07);
+      border-radius: 2px; overflow: hidden;
+      margin: 0 auto 0.85rem;
+    }
+    .loading-bar {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg,
+        rgba(90, 180, 247, 0.4), #6ab8f7, rgba(180, 230, 255, 0.95));
+      transition: width 0.4s cubic-bezier(0.25, 1, 0.5, 1);
+      box-shadow: 0 0 10px rgba(100, 185, 255, 0.7);
+    }
+    #loading-status {
+      font-family: var(--f-mono); font-size: 0.62rem; font-weight: 300;
+      color: rgba(100, 155, 215, 0.52); letter-spacing: 0.08em;
+      min-height: 1.2em;
+    }
+
+    /* ─── ERROR ───────────────────────────────────────────────*/
+    #error-overlay {
+      position: fixed; inset: 0;
+      background: #04091c;
+      display: none; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 200; padding: 2rem; text-align: center;
+    }
+    #error-overlay.visible { display: flex; }
+
+    .err-card { --r: 20px; padding: 2.5rem 2.8rem; max-width: 440px; }
+    .error-title {
+      font-size: 1.1rem; font-weight: 500; letter-spacing: 0.05em;
+      color: rgba(240, 90, 90, 0.9);
+      text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+      margin-bottom: 1rem;
+    }
+    #error-message {
+      font-family: var(--f-mono); font-size: 0.78rem; font-weight: 300;
+      color: var(--mid); line-height: 1.85;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+    }
+    #error-message code {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px; padding: 0.1em 0.45em; font-size: 0.88em;
+    }
+
+    /* ─── STATS (top-right) ───────────────────────────────────*/
+    #stats {
+      position: fixed; top: 1.25rem; right: 1.25rem;
+      --r: 14px;
+      padding: 0.7rem 1rem;
+      min-width: 148px; z-index: 10;
+      opacity: 0; transition: opacity 0.6s ease;
+    }
+    #stats.visible { opacity: 1; }
+
+    .s-row {
+      display: flex; justify-content: space-between;
+      align-items: center; gap: 1rem;
+      padding: 0.14rem 0;
+    }
+    .s-lbl {
+      font-size: 0.58rem; font-weight: 500;
+      letter-spacing: 0.13em; text-transform: uppercase;
+      color: var(--lo);
+      text-shadow: 0 1px 4px rgba(0,0,0,0.7);
+    }
+    .s-val {
+      font-family: var(--f-mono); font-size: 0.68rem;
+      font-weight: 400; color: var(--hi); text-align: right;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.7);
+    }
+
+    /* ─── BOTTOM WIDGET ROW ────────────────────────────────────
+       Left-aligned row. Both widgets same width + stretch height.
+    ──────────────────────────────────────────────────────────*/
+    #ui-panel {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      display: flex;
+      flex-direction: row;
+      justify-content: flex-start;
+      align-items: stretch;
+      gap: 0.55rem;
+      padding: 0 1.5rem 1.5rem;
+      pointer-events: none;
+      z-index: 10;
+      opacity: 0; transition: opacity 0.6s ease;
+    }
+    #ui-panel.visible { opacity: 1; }
+    #ui-panel > * { pointer-events: auto; }
+
+    .wg {
+      --r: 15px;
+      width: 256px;
+      padding: 0.72rem 1.05rem 0.82rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .wg-lbl {
+      font-size: 0.56rem; font-weight: 500;
+      letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--lo);
+      text-shadow: 0 1px 4px rgba(0,0,0,0.75);
+      margin-bottom: 0.48rem;
+    }
+
+    /* ── Time of Day ── */
+    .tod-body { display: flex; align-items: center; gap: 0.75rem; }
+
+    #tod-display {
+      font-family: var(--f-mono); font-size: 1.38rem; font-weight: 300;
+      color: var(--hi); letter-spacing: 0.03em;
+      text-shadow: 0 1px 6px rgba(0,0,0,0.75);
+      line-height: 1; min-width: 58px; flex-shrink: 0;
+    }
+
+    .tod-track { flex: 1; }
+
+    #tod-slider {
+      -webkit-appearance: none; appearance: none;
+      width: 100%; height: 2px; border-radius: 2px;
+      outline: none; cursor: pointer;
+      background: linear-gradient(90deg,
+        #080820 0%, #162878 17%,
+        #d87630 36%, #f0cc50 50%,
+        #60b8e8 63%, #162878 82%, #080820 100%);
+    }
+    #tod-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 13px; height: 13px; border-radius: 50%;
+      background: #fff;
+      box-shadow:
+        0 0 0 2px rgba(255,255,255,0.20),
+        0 0 10px rgba(200,232,255,0.9),
+        0 2px 4px rgba(0,0,0,0.5);
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+    #tod-slider::-webkit-slider-thumb:hover { transform: scale(1.3); }
+    #tod-slider::-moz-range-thumb {
+      width: 13px; height: 13px; border-radius: 50%;
+      background: #fff; border: none;
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.20), 0 0 10px rgba(200,232,255,0.9);
+    }
+
+    /* ── World Seed ── */
+    .seed-body { display: flex; align-items: center; gap: 0.4rem; }
+
+    #seed-input {
+      flex: 1; min-width: 0;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.11);
+      border-radius: 9px;
+      padding: 0.38rem 0.58rem;
+      font-family: var(--f-mono); font-size: 0.8rem; font-weight: 400;
+      color: var(--hi); outline: none;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+      transition: border-color 0.2s, background 0.2s;
+      -moz-appearance: textfield;
+    }
+    #seed-input::-webkit-inner-spin-button,
+    #seed-input::-webkit-outer-spin-button { -webkit-appearance: none; }
+    #seed-input:focus {
+      border-color: rgba(100, 185, 247, 0.45);
+      background: rgba(100, 185, 247, 0.07);
+    }
+    #seed-input::placeholder { color: rgba(110, 158, 218, 0.40); }
+
+    #seed-btn {
+      flex-shrink: 0; width: 30px; height: 30px;
+      border-radius: 8px;
+      border: 1px solid rgba(100, 185, 247, 0.22);
+      background: rgba(100, 185, 247, 0.09);
+      color: var(--acc); cursor: pointer;
+      font-size: 0.85rem; font-family: var(--f-mono); font-weight: 500;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.2s, transform 0.32s cubic-bezier(0.34,1.56,0.64,1);
+    }
+    #seed-btn:hover { background: rgba(100, 185, 247, 0.20); transform: rotate(90deg); }
+    #seed-btn:active { transform: rotate(210deg); }
+
+    /* ─── CONTROLS HINT (bottom-right) ───────────────────────*/
+    #controls-hint {
+      position: fixed; bottom: 1.5rem; right: 1.5rem;
+      z-index: 10;
+      opacity: 0; transition: opacity 0.6s ease;
+    }
+    #controls-hint.visible { opacity: 1; }
+
+    /* popover — opens upward */
+    .ctrl-pop {
+      --r: 14px;
+      position: absolute; bottom: calc(100% + 10px); right: 0;
+      padding: 0.85rem 1.05rem;
+      min-width: 210px;
+      opacity: 0;
+      transform: translateY(6px) scale(0.97);
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      pointer-events: none;
+    }
+    #controls-hint:hover .ctrl-pop {
+      opacity: 1; transform: none; pointer-events: all;
+    }
+
+    .ctrl-row {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.24rem 0;
+    }
+    .ctrl-row kbd {
+      font-family: var(--f-mono); font-size: 0.60rem; font-weight: 500;
+      color: var(--acc);
+      background: rgba(100, 185, 247, 0.09);
+      border: 1px solid rgba(100, 185, 247, 0.22);
+      border-radius: 5px; padding: 0.18em 0.5em;
+      min-width: 50px; text-align: center; white-space: nowrap;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+    }
+    .ctrl-row span {
+      font-size: 0.68rem; color: var(--mid); letter-spacing: 0.02em;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.65);
+    }
+
+    /* the ? button — same glass as everything else */
+    .help-btn {
+      --r: 50%;
+      width: 34px; height: 34px;
+      cursor: pointer;
+      font-size: 0.9rem; font-family: var(--f-mono); font-weight: 400;
+      color: var(--mid);
+      display: flex; align-items: center; justify-content: center;
+      transition: color 0.18s, transform 0.18s;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.7);
+      /* .g class provides background, border, and box-shadow */
+    }
+    .help-btn:hover { color: var(--hi); transform: scale(1.1); }
+  </style>
+</head>
+<body>
+
+  <!-- ── Loading ───────────────────────────────────────────── -->
+  <div id="loading-overlay">
+    <canvas id="grain-canvas"></canvas>
+    <div class="ld-inner">
+      <h1 class="ld-title">Terra</h1>
+      <p class="ld-sub">Procedural World Renderer</p>
+      <div class="ld-orb-wrap">
+        <div class="ld-orb"></div>
+      </div>
+      <div class="ld-track">
+        <div class="loading-bar" id="loading-bar"></div>
+      </div>
+      <div id="loading-status">Initializing</div>
+    </div>
+  </div>
+
+  <!-- ── Error ─────────────────────────────────────────────── -->
+  <div id="error-overlay">
+    <div class="err-card g">
+      <div class="error-title">WebGPU Unavailable</div>
+      <div id="error-message">
+        Your browser does not support WebGPU.<br>
+        Please use Chrome 113+ or Edge 113+.<br><br>
+        Enable via: <code>chrome://flags/#enable-unsafe-webgpu</code>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Canvas ────────────────────────────────────────────── -->
+  <canvas id="canvas"></canvas>
+
+  <!-- ── Stats (top-right) ─────────────────────────────────── -->
+  <div id="stats" class="g">
+    <div class="s-row">
+      <span class="s-lbl">FPS</span>
+      <span class="s-val" id="fps">--</span>
+    </div>
+    <div class="s-row">
+      <span class="s-lbl">Frame</span>
+      <span class="s-val"><span id="frame-time">--</span> ms</span>
+    </div>
+    <div class="s-row">
+      <span class="s-lbl">Camera</span>
+      <span class="s-val" id="cam-pos">--</span>
+    </div>
+  </div>
+
+  <!-- ── Bottom widgets — left-aligned row ─────────────────── -->
+  <div id="ui-panel">
+
+    <!-- Time of Day first -->
+    <div class="wg wg-tod g">
+      <div class="wg-lbl">Time of Day</div>
+      <div class="tod-body">
+        <span id="tod-display">12:00</span>
+        <div class="tod-track">
+          <input type="range" id="tod-slider" min="0" max="1" step="0.001" value="0.45" />
+        </div>
+      </div>
+    </div>
+
+    <!-- World Seed second -->
+    <div class="wg wg-seed g">
+      <div class="wg-lbl">World Seed</div>
+      <div class="seed-body">
+        <input type="number" id="seed-input" placeholder="137" />
+        <button id="seed-btn" title="Regenerate">&#8635;</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Controls hint (bottom-right) ─────────────────────── -->
+  <div id="controls-hint">
+    <div class="ctrl-pop g">
+      <div class="ctrl-row"><kbd>WASD</kbd>   <span>Move</span></div>
+      <div class="ctrl-row"><kbd>Mouse</kbd>  <span>Look &middot; click to lock</span></div>
+      <div class="ctrl-row"><kbd>Shift</kbd>  <span>Sprint</span></div>
+      <div class="ctrl-row"><kbd>Q / E</kbd>  <span>Down / Up</span></div>
+      <div class="ctrl-row"><kbd>Scroll</kbd> <span>Adjust speed</span></div>
+    </div>
+    <button class="help-btn g">?</button>
+  </div>
+
+  <script>
+    // ── Seed input sync ──────────────────────────────────────
+    const params = new URLSearchParams(window.location.search);
+    document.getElementById('seed-input').value = params.get('seed') || '137';
+
+    function applySeed() {
+      const val = parseInt(document.getElementById('seed-input').value, 10);
+      if (!isNaN(val)) {
+        const p = new URLSearchParams(window.location.search);
+        p.set('seed', String(val));
+        window.location.search = p.toString();
+      }
+    }
+    document.getElementById('seed-btn').addEventListener('click', applySeed);
+    document.getElementById('seed-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') applySeed();
+    });
+
+    // ── Animated film grain ──────────────────────────────────
+    (function () {
+      const canvas = document.getElementById('grain-canvas');
+      const ctx    = canvas.getContext('2d');
+      let timer    = null;
+
+      function resize() {
+        // 1/3 native res → bilinear upscale = smooth film grain
+        canvas.width  = Math.ceil(window.innerWidth  / 3);
+        canvas.height = Math.ceil(window.innerHeight / 3);
+      }
+
+      function drawGrain() {
+        const w = canvas.width, h = canvas.height;
+        const img = ctx.createImageData(w, h);
+        const d   = img.data;
+        for (let i = 0; i < d.length; i += 4) {
+          const v = (Math.random() * 255) | 0;
+          d[i] = d[i + 1] = d[i + 2] = v;
+          d[i + 3] = 36;
+        }
+        ctx.putImageData(img, 0, 0);
+        timer = setTimeout(() => requestAnimationFrame(drawGrain), 42); // ~24 fps
+      }
+
+      window.addEventListener('resize', resize);
+      resize();
+      requestAnimationFrame(drawGrain);
+
+      window._stopGrain = function () {
+        clearTimeout(timer);
+        canvas.style.display = 'none';
+      };
+    })();
+  </script>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
