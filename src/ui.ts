@@ -70,7 +70,6 @@ export class UI {
 
   onTimeOfDayChange(callback: (value: number) => void): void {
     this.todCallback = callback;
-    // Fire immediately with current value
     callback(parseFloat(this.todSlider.value));
   }
 
@@ -79,7 +78,6 @@ export class UI {
   }
 
   private updateTodDisplay(value: number): void {
-    // Map 0-1 to hours (0 = midnight, 0.5 = noon)
     const hours = (value * 24) % 24;
     const h = Math.floor(hours);
     const m = Math.floor((hours - h) * 60);

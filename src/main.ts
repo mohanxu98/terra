@@ -4,7 +4,6 @@ import { UI } from './ui';
 async function main(): Promise<void> {
   const ui = new UI();
 
-  // Check WebGPU support
   if (!navigator.gpu) {
     ui.showError(
       'WebGPU is not supported in this browser. ' +
@@ -16,8 +15,6 @@ async function main(): Promise<void> {
   try {
     ui.setStatus('Initializing WebGPU...', 5);
 
-    // Request adapter
-    // Try high-performance first, fall back to default
     let adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) {
       adapter = await navigator.gpu.requestAdapter();
@@ -31,7 +28,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Log adapter info (API varies by browser version)
     try {
       const adapterInfo = await (adapter as unknown as { requestAdapterInfo(): Promise<{ vendor: string; device: string }> }).requestAdapterInfo();
       console.log('WebGPU Adapter:', adapterInfo.vendor, adapterInfo.device);
@@ -39,12 +35,8 @@ async function main(): Promise<void> {
       console.log('WebGPU adapter info unavailable');
     }
 
-    // Request device with required features
     const requiredFeatures: GPUFeatureName[] = [];
 
-    // read-only/read-write storage textures were promoted to core in Chrome ~132+
-    // so we don't need to request them as a feature on modern Chrome builds.
-    // Optional: float32-filterable for texture sampling
     if (adapter.features.has('float32-filterable')) {
       requiredFeatures.push('float32-filterable');
     }
@@ -53,7 +45,6 @@ async function main(): Promise<void> {
       requiredFeatures,
     });
 
-    // Handle device loss
     device.lost.then((info) => {
       console.error('WebGPU device lost:', info.message, info.reason);
       if (info.reason !== 'destroyed') {
@@ -63,7 +54,6 @@ async function main(): Promise<void> {
 
     ui.setStatus('Configuring canvas...', 10);
 
-    // Setup canvas
     const canvas = document.getElementById('canvas') as HTMLCanvasElement;
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
@@ -81,7 +71,6 @@ async function main(): Promise<void> {
       alphaMode: 'opaque',
     });
 
-    // Handle resize
     window.addEventListener('resize', () => {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
@@ -89,24 +78,20 @@ async function main(): Promise<void> {
       renderer.onResize(canvas.width, canvas.height);
     });
 
-    // Initialize renderer (this initializes all subsystems)
     const renderer = new Renderer(device, context, format, canvas, ui);
     await renderer.init();
 
-    // Show UI
     ui.hideLoading();
     ui.showUI();
 
-    // Connect UI events
     ui.onTimeOfDayChange((tod) => renderer.setTimeOfDay(tod));
 
-    // Start render loop
     let lastTime = performance.now();
     let frameCount = 0;
     let fpsAccum = 0;
 
     function frame(timestamp: number): void {
-      const dt = Math.min((timestamp - lastTime) / 1000, 0.05); // cap at 50ms
+      const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
       lastTime = timestamp;
 
       frameCount++;

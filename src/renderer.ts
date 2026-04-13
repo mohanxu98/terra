@@ -2,17 +2,10 @@ import { Camera } from './camera';
 import { UI } from './ui';
 import { Terrain } from './terrain/terrain';
 import { Heightmap } from './terrain/heightmap';
+import { ErosionSystem } from './terrain/erosion';
+import { Vegetation } from './terrain/vegetation';
+import { Ocean, SEA_LEVEL } from './terrain/ocean';
 
-// Shared globals uniform buffer layout (std140):
-// offset   0: mat4x4f viewProj       (64 bytes)
-// offset  64: mat4x4f invViewProj    (64 bytes)
-// offset 128: vec3f   sunDir         (12 bytes) + 4 pad
-// offset 144: vec3f   cameraPos      (12 bytes) + 4 pad
-// offset 160: f32     time
-// offset 164: f32     timeOfDay      (0–1)
-// offset 168: f32     seaLevel
-// offset 172: f32     pad
-// Total: 176 bytes
 export const GLOBALS_BUFFER_SIZE = 176;
 
 export class Renderer {
@@ -22,6 +15,10 @@ export class Renderer {
   private depthView!: GPUTextureView;
 
   private terrain!: Terrain;
+  private ocean!: Ocean;
+  private vegetation!: Vegetation;
+  private msaaTexture!: GPUTexture;
+  private msaaView!: GPUTextureView;
   private timeOfDay = 0.45;
 
   constructor(
@@ -44,14 +41,13 @@ export class Renderer {
     });
 
     this.createDepthTexture();
+    this.createMSAATexture();
 
     this.ui.setStatus('Generating terrain heightmap...', 40);
 
-    // Seed from URL param: ?seed=12345  (default 137)
     const urlSeed = new URLSearchParams(window.location.search).get('seed');
     const seed = urlSeed ? (parseInt(urlSeed, 10) || 137) : 137;
 
-    // Generate heightmap on CPU and upload directly to a GPU texture
     const heightmap = new Heightmap(512, 512, seed);
     const heightData = heightmap.generate();
 
@@ -59,7 +55,7 @@ export class Renderer {
       label: 'Heightmap Texture',
       size: { width: 512, height: 512 },
       format: 'r32float',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.STORAGE_BINDING,
     });
 
     this.device.queue.writeTexture(
@@ -69,10 +65,34 @@ export class Renderer {
       { width: 512, height: 512 },
     );
 
-    this.ui.setStatus('Building terrain mesh...', 70);
+    this.ui.setStatus('Running hydraulic erosion...', 60);
 
-    this.terrain = new Terrain(this.device, this.format, heightmapTex, this.globalsBuffer);
+    const erosion = new ErosionSystem(this.device);
+    const erosionEncoder = this.device.createCommandEncoder({ label: 'Erosion Encoder' });
+    erosion.run(erosionEncoder, heightmapTex);
+    this.device.queue.submit([erosionEncoder.finish()]);
+
+    this.ui.setStatus('Building terrain mesh...', 75);
+
+    this.terrain = new Terrain(this.device, this.format, heightmapTex, this.globalsBuffer, erosion.getSmoothedAccumTex());
     await this.terrain.init();
+
+    this.ocean = new Ocean(this.device, this.format, this.globalsBuffer, 4);
+    await this.ocean.init();
+
+    this.ui.setStatus('Placing vegetation...', 90);
+
+    this.vegetation = new Vegetation(
+      this.device,
+      this.format,
+      this.globalsBuffer,
+      heightmapTex,
+      this.terrain.getNormalTex(),
+      erosion.getSmoothedAccumTex(),
+      4,
+    );
+    await this.vegetation.init();
+    this.vegetation.dispatchCompute();
 
     this.ui.setStatus('Ready!', 100);
   }
@@ -83,14 +103,28 @@ export class Renderer {
       label: 'Depth Texture',
       size: { width: this.canvas.width, height: this.canvas.height },
       format: 'depth24plus',
+      sampleCount: 4,
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this.depthView = this.depthTexture.createView();
   }
 
+  private createMSAATexture(): void {
+    if (this.msaaTexture) this.msaaTexture.destroy();
+    this.msaaTexture = this.device.createTexture({
+      label: 'MSAA Color Texture',
+      size: { width: this.canvas.width, height: this.canvas.height },
+      format: this.format,
+      sampleCount: 4,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.msaaView = this.msaaTexture.createView();
+  }
+
   onResize(width: number, height: number): void {
     this.camera.onResize(width, height);
     this.createDepthTexture();
+    this.createMSAATexture();
   }
 
   setTimeOfDay(tod: number): void {
@@ -104,14 +138,12 @@ export class Renderer {
   render(time: number, dt: number): void {
     this.camera.update(dt);
 
-    // Sun arc: tod=0 → below horizon, tod=0.25 → sunrise, tod=0.5 → overhead noon, tod=0.75 → sunset
     const theta = this.timeOfDay * Math.PI * 2 - Math.PI * 0.5;
     const sunY = Math.sin(theta);
     const sunX = Math.cos(theta) * 0.5;
     const sunZ = -Math.abs(Math.cos(theta)) * 0.866;
     const sunLen = Math.sqrt(sunX * sunX + sunY * sunY + sunZ * sunZ);
 
-    // Write globals buffer
     const globalsData = new ArrayBuffer(GLOBALS_BUFFER_SIZE);
     const f32 = new Float32Array(globalsData);
     const view = new DataView(globalsData);
@@ -135,7 +167,7 @@ export class Renderer {
 
     view.setFloat32(160, time, true);
     view.setFloat32(164, this.timeOfDay, true);
-    view.setFloat32(168, 0.0, true);
+    view.setFloat32(168, SEA_LEVEL, true);
     view.setFloat32(172, 0.0, true);
 
     this.device.queue.writeBuffer(this.globalsBuffer, 0, globalsData);
@@ -145,10 +177,11 @@ export class Renderer {
     const renderPass = encoder.beginRenderPass({
       label: 'Main Render Pass',
       colorAttachments: [{
-        view: this.context.getCurrentTexture().createView(),
-        clearValue: { r: 0.45, g: 0.65, b: 0.85, a: 1.0 }, // sky blue
+        view: this.msaaView,
+        resolveTarget: this.context.getCurrentTexture().createView(),
+        clearValue: { r: 0.45, g: 0.65, b: 0.85, a: 1.0 },
         loadOp: 'clear',
-        storeOp: 'store',
+        storeOp: 'discard',
       }],
       depthStencilAttachment: {
         view: this.depthView,
@@ -159,6 +192,8 @@ export class Renderer {
     });
 
     this.terrain.encode(renderPass);
+    this.ocean.encode(renderPass);
+    this.vegetation.encode(renderPass);
 
     renderPass.end();
     this.device.queue.submit([encoder.finish()]);

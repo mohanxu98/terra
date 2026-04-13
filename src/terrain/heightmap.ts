@@ -1,6 +1,3 @@
-// Fractional Brownian Motion (fBm) heightmap generator
-// Uses gradient noise (Perlin-style) for smooth terrain
-
 function fade(t: number): number {
   return t * t * t * (t * (t * 6 - 15) + 10);
 }
@@ -24,7 +21,6 @@ class PermutationTable {
     const perm = new Uint8Array(256);
     for (let i = 0; i < 256; i++) perm[i] = i;
 
-    // Fisher-Yates shuffle with seeded LCG
     let s = seed | 0;
     for (let i = 255; i > 0; i--) {
       s = (s * 1664525 + 1013904223) & 0xffffffff;
@@ -71,12 +67,12 @@ export class Heightmap {
   generate(): Float32Array<ArrayBuffer> {
     const perm = new PermutationTable(this.seed);
 
-    const octaves = 8;
-    const lacunarity = 2.0;
-    const persistence = 0.5;
-    const baseFrequency = 1.5;
+    const octaves       = 7;
+    const lacunarity    = 2.0;
+    const persistence   = 0.40;
+    const baseFrequency = 1.2;
+    const sharpness     = 1.5;
 
-    // Center of the island
     const cx = this.width / 2;
     const cy = this.height / 2;
     const maxDist = Math.sqrt(cx * cx + cy * cy);
@@ -84,38 +80,38 @@ export class Heightmap {
     let globalMin = Infinity;
     let globalMax = -Infinity;
 
-    // First pass: fBm
     for (let y = 0; y < this.height; y++) {
       for (let x = 0; x < this.width; x++) {
         const nx = (x / this.width) * 4.0;
         const ny = (y / this.height) * 4.0;
 
-        let val = 0;
-        let amp = 1.0;
-        let freq = baseFrequency;
-        let maxAmp = 0;
+        let val    = 0;
+        let amp    = 1.0;
+        let freq   = baseFrequency;
+        let weight = 1.0;
 
         for (let o = 0; o < octaves; o++) {
-          val += perm.noise2D(nx * freq, ny * freq) * amp;
-          maxAmp += amp;
-          amp *= persistence;
-          freq *= lacunarity;
+          const n    = perm.noise2D(nx * freq, ny * freq);
+          let signal = 1.0 - Math.abs(n);
+          signal     = Math.pow(signal, sharpness);
+          val       += amp * signal * weight;
+          weight     = Math.min(1.0, signal * 2.0);
+          amp       *= persistence;
+          freq      *= lacunarity;
         }
-        val /= maxAmp; // normalize to roughly [-1, 1]
 
-        // Radial falloff (island shape)
-        const dx = x - cx;
-        const dy = y - cy;
+        const warpFreq = 0.55;
+        const warpAmt  = 0.38;
+        const wx = perm.noise2D(nx * warpFreq + 3.7, ny * warpFreq + 1.4) * warpAmt * maxDist;
+        const wy = perm.noise2D(nx * warpFreq + 8.1, ny * warpFreq + 6.2) * warpAmt * maxDist;
+        const dx = (x - cx) + wx;
+        const dy = (y - cy) + wy;
         const dist = Math.sqrt(dx * dx + dy * dy) / maxDist;
-        // Smooth falloff near edges
-        const falloff = 1.0 - Math.pow(Math.max(0, dist * 1.2 - 0.1), 2.0);
+        const falloff = 1.0 - Math.pow(Math.max(0, dist * 1.2 - 0.1), 1.3);
         const smoothFalloff = Math.max(0, falloff);
 
-        val = val * 0.5 + 0.5; // to [0, 1]
         val *= smoothFalloff;
-
-        // Bump up mountains a bit
-        val = Math.pow(val, 0.9);
+        val = Math.pow(val, 2.2);
 
         this.data[y * this.width + x] = val;
 
@@ -124,12 +120,34 @@ export class Heightmap {
       }
     }
 
-    // Normalize to [0, 1]
     const range = globalMax - globalMin;
     if (range > 0) {
       for (let i = 0; i < this.data.length; i++) {
-        this.data[i] = (this.data[i] - globalMin) / range;
+        this.data[i] = ((this.data[i] - globalMin) / range) * 0.72;
       }
+    }
+
+    const w = this.width;
+    const h = this.height;
+    const tmp = new Float32Array(w * h);
+    const K = [1,4,7,4,1, 4,16,26,16,4, 7,26,41,26,7, 4,16,26,16,4, 1,4,7,4,1];
+    const Ksum = K.reduce((a, b) => a + b, 0);
+
+    for (let pass = 0; pass < 1; pass++) {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          let sum = 0;
+          for (let ky = 0; ky < 5; ky++) {
+            for (let kx = 0; kx < 5; kx++) {
+              const sx = Math.min(Math.max(x + kx - 2, 0), w - 1);
+              const sy = Math.min(Math.max(y + ky - 2, 0), h - 1);
+              sum += this.data[sy * w + sx] * K[ky * 5 + kx];
+            }
+          }
+          tmp[y * w + x] = sum / Ksum;
+        }
+      }
+      this.data.set(tmp);
     }
 
     return this.data;
