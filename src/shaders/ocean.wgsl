@@ -51,13 +51,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VOut {
     let wx = f32(vc) / f32(MESH_N) * WORLD_EXT - WORLD_HALF;
     let wz = f32(vr) / f32(MESH_N) * WORLD_EXT - WORLD_HALF;
 
-    // Tile the FFT texture over the world (with correct negative-modulo wrapping)
-    let ix = i32(round(wx / TILE_WORLD * f32(OCEAN_N)));
-    let iz = i32(round(wz / TILE_WORLD * f32(OCEAN_N)));
-    let tx = u32(((ix % i32(OCEAN_N)) + i32(OCEAN_N)) % i32(OCEAN_N));
-    let tz = u32(((iz % i32(OCEAN_N)) + i32(OCEAN_N)) % i32(OCEAN_N));
-
-    let d      = textureLoad(oceanTex, vec2u(tx, tz), 0);
+    let d      = sampleOcean(wx, wz);
     let height = d.r * WAVE_SCALE;
     let wy     = globals.seaLevel + height;
 
@@ -66,6 +60,31 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VOut {
     out.world_pos = vec3f(wx, wy, wz);
     out.raw_uv    = vec2f(wx, wz);   // world xz for FS tiling lookup
     return out;
+}
+
+// ── Bilinear ocean texture sampler ────────────────────────────────────────────
+// rgba32float can't use textureSample without float32-filterable, so we
+// manually blend the 4 surrounding texels (r=height, g=∂H/∂x, b=∂H/∂z).
+fn sampleOcean(wx: f32, wz: f32) -> vec4f {
+    let N  = i32(OCEAN_N);
+    let u  = wx / TILE_WORLD * f32(OCEAN_N);
+    let v  = wz / TILE_WORLD * f32(OCEAN_N);
+    let i0 = i32(floor(u));
+    let j0 = i32(floor(v));
+    let fx = u - f32(i0);
+    let fz = v - f32(j0);
+
+    let tx0 = u32(((i0     % N) + N) % N);
+    let tx1 = u32((((i0+1) % N) + N) % N);
+    let tz0 = u32(((j0     % N) + N) % N);
+    let tz1 = u32((((j0+1) % N) + N) % N);
+
+    let d00 = textureLoad(oceanTex, vec2u(tx0, tz0), 0);
+    let d10 = textureLoad(oceanTex, vec2u(tx1, tz0), 0);
+    let d01 = textureLoad(oceanTex, vec2u(tx0, tz1), 0);
+    let d11 = textureLoad(oceanTex, vec2u(tx1, tz1), 0);
+
+    return mix(mix(d00, d10, fx), mix(d01, d11, fx), fz);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -92,12 +111,7 @@ fn aces(x: vec3f) -> vec3f {
 // ── Fragment shader ───────────────────────────────────────────────────────────
 @fragment
 fn fs_main(in: VOut) -> @location(0) vec4f {
-    // Tiled slope lookup matching VS
-    let ix = i32(round(in.raw_uv.x / TILE_WORLD * f32(OCEAN_N)));
-    let iz = i32(round(in.raw_uv.y / TILE_WORLD * f32(OCEAN_N)));
-    let tx = u32(((ix % i32(OCEAN_N)) + i32(OCEAN_N)) % i32(OCEAN_N));
-    let tz = u32(((iz % i32(OCEAN_N)) + i32(OCEAN_N)) % i32(OCEAN_N));
-    let d  = textureLoad(oceanTex, vec2u(tx, tz), 0);
+    let d = sampleOcean(in.raw_uv.x, in.raw_uv.y);
 
     // Build normal from gradient: surface y=H(x,z) → N = (-∂H/∂x, 1, -∂H/∂z)
     let slope_x = d.g;
