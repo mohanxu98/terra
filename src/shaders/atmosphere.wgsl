@@ -96,7 +96,10 @@ fn compute_sky_color(world_pos: vec3f, sun_dir: vec3f) -> vec3f {
   let sun_angle = dot(view_dir, sun_dir);
 
   // More dramatic time transitions based on time of day
-  let day_factor = smoothstep(0.25, 0.75, tod);
+  // Make evening go back to night after sunset
+  let morning_rise = smoothstep(0.25, 0.35, tod);
+  let evening_fall = 1.0 - smoothstep(0.8, 0.9, tod);
+  let day_factor = morning_rise * evening_fall;
 
   // Sunset/sunrise factor
   let dawn_factor = smoothstep(0.2, 0.3, tod) * (1.0 - smoothstep(0.3, 0.4, tod));
