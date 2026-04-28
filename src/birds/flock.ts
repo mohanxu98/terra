@@ -65,13 +65,24 @@ export class Flock {
   }
 
   private createBuffers(): void {
-    // Bird mesh: local space, forward = +Z
-    // xyz = local position, w = flap weight (1 = wing tip, 0 = body)
+    // 12-vertex bird, local space: +Z forward, +X right, +Y up.
+    // w = flap weight (0 = rigid body, 0.4 = elbow, 1.0 = wing tip).
+    // Wings have a ~16° dihedral (tips elevated) so the upper wing surface
+    // faces a horizontal viewer instead of being edge-on.
     const verts = new Float32Array([
-       0.0,  0.0,  1.0,  0.0,  // nose (tip)
-      -1.0,  0.0,  0.0,  1.0,  // left wing tip
-       1.0,  0.0,  0.0,  1.0,  // right wing tip
-       0.0,  0.0, -0.5,  0.0,  // tail
+    //    x       y       z     flapW
+       0.00,   0.08,  0.62,   0.00,  //  v0  nose tip
+       0.00,   0.18,  0.35,   0.00,  //  v1  head top        ← body height visible from front
+      -0.10,   0.10,  0.28,   0.00,  //  v2  head left
+       0.10,   0.10,  0.28,   0.00,  //  v3  head right
+       0.00,  -0.06,  0.10,   0.00,  //  v4  belly           ← visible from below/side
+      -0.22,   0.10,  0.08,   0.00,  //  v5  left wing root
+       0.22,   0.10,  0.08,   0.00,  //  v6  right wing root
+      -0.55,   0.18,  0.00,   0.40,  //  v7  left elbow      ← dihedral begins
+       0.55,   0.18,  0.00,   0.40,  //  v8  right elbow
+      -1.00,   0.28, -0.12,   1.00,  //  v9  left tip        ← max dihedral
+       1.00,   0.28, -0.12,   1.00,  //  v10 right tip
+       0.00,   0.06, -0.40,   0.00,  //  v11 tail
     ]);
     this.vertexBuffer = this.device.createBuffer({
       label: 'Bird Vertex Buffer',
@@ -80,7 +91,28 @@ export class Flock {
     });
     this.device.queue.writeBuffer(this.vertexBuffer, 0, verts);
 
-    const indices = new Uint16Array([0, 1, 3,  0, 3, 2]);
+    // 14 triangles = 42 indices
+    const indices = new Uint16Array([
+      // Head / body (visible from front and sides)
+       0,  2,  1,   //  nose → head, left face
+       0,  1,  3,   //  nose → head, right face
+       1,  2,  4,   //  head → belly, left
+       1,  4,  3,   //  head → belly, right
+      // Wing-root connections
+       2,  5,  4,   //  left  body → wing root
+       3,  4,  6,   //  right body → wing root
+      // Left wing (upper surface faces upward/outward due to dihedral)
+       2,  7,  5,   //  left  inner front
+       5,  7, 11,   //  left  inner rear
+       7,  9, 11,   //  left  outer
+      // Right wing
+       3,  6,  8,   //  right inner front
+       6, 11,  8,   //  right inner rear
+       8, 11, 10,   //  right outer
+      // Lower body / tail
+       4, 11,  5,   //  belly → tail, left
+       4,  6, 11,   //  belly → tail, right
+    ]);
     this.indexBuffer = this.device.createBuffer({
       label: 'Bird Index Buffer',
       size:  indices.byteLength,
@@ -296,6 +328,6 @@ export class Flock {
     pass.setBindGroup(0, this.bindGroup);
     pass.setVertexBuffer(0, this.vertexBuffer);
     pass.setIndexBuffer(this.indexBuffer, 'uint16');
-    pass.drawIndexed(6, NUM_BIRDS);
+    pass.drawIndexed(42, NUM_BIRDS);
   }
 }
